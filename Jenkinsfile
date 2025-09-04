@@ -7,7 +7,7 @@ pipeline {
     stages {
         stage('Checkout SCM') {
             steps {
-                git url: 'https://github.com/vaseem-06/sabear_simplecutomerapp.git', branch: 'feature-1.1'
+                git url: 'https://github.com/vaseem-06/sabear_simplecutomerapp.git', branch: 'master'
             }
         }
         stage('Build') {
