@@ -10,7 +10,7 @@ pipeline {
         NEXUS_VERSION = "nexus3"
         NEXUS_PROTOCOL = "http"
         NEXUS_URL = "98.82.8.146:8081"
-        NEXUS_REPOSITORY = "sonarqube"
+        NEXUS_REPOSITORY = "hiring-app"
         NEXUS_CREDENTIAL_ID = "nexus_server"
     }
 
