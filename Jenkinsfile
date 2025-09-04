@@ -1,72 +1,113 @@
 pipeline {
     agent any
+
     environment {
-        NEXUS_CRED = 'nexus_server'
-        TOMCAT_CRED = 'tomcat_credentials'
+        MAVEN_HOME = '/opt/apache-maven-3.9.11'
+        JAVA_HOME  = '/usr/lib/jvm/java-17-amazon-corretto.x86_64'
+        PATH = "${MAVEN_HOME}/bin:${JAVA_HOME}/bin:${env.PATH}"
+
+        // Nexus details
+        NEXUS_VERSION = "nexus3"
+        NEXUS_PROTOCOL = "http"
+        NEXUS_URL = "98.82.8.146:8081"
+        NEXUS_REPOSITORY = "sonarqube"
+        NEXUS_CREDENTIAL_ID = "nexus_server"
     }
+
     stages {
         stage('Checkout SCM') {
             steps {
-                git url: 'https://github.com/vaseem-06/sabear_simplecutomerapp.git', branch: 'master'
+                git branch: 'master', url: 'https://github.com/vaseem-06/sabear_simplecutomerapp.git'
             }
         }
+
         stage('Build') {
             steps {
-                tool name: 'MVN_HOME', type: 'maven'
                 sh 'mvn clean package -DskipTests'
             }
         }
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('SonarQube') {
-                    sh 'mvn sonar:sonar'
-                }
-            }
-        }
+
         stage('Deploy to Nexus') {
             steps {
-                withCredentials([usernamePassword(credentialsId: "${NEXUS_CRED}", usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
-                    sh '''
-                    mvn deploy -DskipTests \
-                        -Dnexus.username=$NEXUS_USER \
-                        -Dnexus.password=$NEXUS_PASS \
-                        --settings /var/lib/jenkins/.m2/settings.xml
-                    '''
+                script {
+                    pom = readMavenPom file: "pom.xml"
+                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}")
+
+                    if (filesByGlob.length > 0) {
+                        def artifactPath = filesByGlob[0].path
+                        echo "*** Uploading: ${artifactPath}"
+
+                        nexusArtifactUploader(
+                            nexusVersion: NEXUS_VERSION,
+                            protocol: NEXUS_PROTOCOL,
+                            nexusUrl: NEXUS_URL,
+                            groupId: pom.groupId,
+                            version: pom.version,
+                            repository: NEXUS_REPOSITORY,
+                            credentialsId: NEXUS_CREDENTIAL_ID,
+                            artifacts: [
+                                [artifactId: pom.artifactId, classifier: '', file: artifactPath, type: pom.packaging],
+                                [artifactId: pom.artifactId, classifier: '', file: "pom.xml", type: "pom"]
+                            ]
+                        )
+                    } else {
+                        error "Artifact not found in target/"
+                    }
                 }
             }
         }
+
         stage('Deploy to Tomcat') {
             steps {
-                withCredentials([usernamePassword(credentialsId: "${TOMCAT_CRED}", usernameVariable: 'TOMCAT_USER', passwordVariable: 'TOMCAT_PASS')]) {
-                    sh '''
-                    WAR_FILE=$(ls target/*.war | head -n 1)
-                    curl -u $TOMCAT_USER:$TOMCAT_PASS \
-                         -T $WAR_FILE \
-                         http://52.87.164.57:8080/manager/text/deploy?path=/hiring&update=true
-                    '''
+                script {
+                    def deployFailed = false
+                    withCredentials([usernamePassword(credentialsId: 'tomcat_credentials',
+                                                     usernameVariable: 'TOMCAT_USER',
+                                                     passwordVariable: 'TOMCAT_PASS')]) {
+                        try {
+                            sh """
+                            curl -u $TOMCAT_USER:$TOMCAT_PASS \
+                            -T target/*.war \
+                            http://52.87.164.57:8080/manager/text/deploy?path=/hiring&update=true
+                            """
+                        } catch (err) {
+                            deployFailed = true
+                            echo "Deployment failed!"
+                        }
+                    }
+
+                    if (deployFailed) {
+                        echo "Rolling back to previous WAR..."
+                        withCredentials([usernamePassword(credentialsId: 'tomcat_credentials',
+                                                          usernameVariable: 'TOMCAT_USER',
+                                                          passwordVariable: 'TOMCAT_PASS')]) {
+                            sh """
+                            curl -u $TOMCAT_USER:$TOMCAT_PASS \
+                            -T previous.war \
+                            http://52.87.164.57:8080/manager/text/deploy?path=/hiring&update=true
+                            """
+                        }
+                        error("Deployment failed and rollback executed.")
+                    }
                 }
-            }
-        }
-        stage('Slack Notification') {
-            steps {
-                slackSend(
-                    channel: '#jenkins-integration',
-                    color: 'good',
-                    message: "Hi Team, Jenkins pipeline for jenkins-04 task 2 *SIMPLE CUSTOMER APP* has finished successfully! :white_check_mark:\nDeployed by: Imran Khan"
-                )
             }
         }
     }
+
     post {
-        always {
-            echo 'Pipeline finished'
+        success {
+            echo 'Pipeline finished successfully!'
+            slackSend(channel: '#jenkins-integration',
+                      color: 'good',
+                      tokenCredentialId: 'slack_integrations',
+                      message: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}")
         }
         failure {
-            slackSend(
-                channel: '#jenkins-integration',
-                color: 'danger',
-                message: ":warning: Jenkins pipeline for *hiring-app* failed! Please check."
-            )
+            echo 'Pipeline failed!'
+            slackSend(channel: '#jenkins-integration',
+                      color: 'danger',
+                      tokenCredentialId: 'slack_integrations',
+                      message: "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}")
         }
     }
 }
