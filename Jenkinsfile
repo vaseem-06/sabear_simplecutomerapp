@@ -1,94 +1,72 @@
 pipeline {
     agent any
-
-    tools {
-        maven "MVN_HOME"
-    }
-
     environment {
-        NEXUS_VERSION      = "nexus3"
-        NEXUS_PROTOCOL     = "http"
-        NEXUS_URL          = "98.82.8.146:8081"
-        NEXUS_REPOSITORY   = "maven-releases"
-        NEXUS_CREDENTIAL_ID= "nexus_server"
+        NEXUS_CRED = 'nexus_server'
+        TOMCAT_CRED = 'tomcat_credentials'
     }
-
     stages {
-        stage("Checkout") {
+        stage('Checkout SCM') {
             steps {
-                git branch: 'master', url: 'https://github.com/vaseem-06/hiring-app-1.git'
+                git url: 'https://github.com/vaseem-06/sabear_simplecutomerapp.git', branch: 'feature-1.1'
             }
         }
-
-        stage("Build & Test") {
+        stage('Build') {
             steps {
-                sh 'mvn clean package -Dmaven.test.failure.ignore=true'
+                tool name: 'Maven-3.9.11', type: 'maven'
+                sh 'mvn clean package -DskipTests'
             }
         }
-
-        stage("Publish to Nexus") {
+        stage('SonarQube Analysis') {
             steps {
-                script {
-                    pom = readMavenPom file: "pom.xml"
-                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}")
-                    artifactPath = filesByGlob[0].path
-
-                    nexusArtifactUploader(
-                        nexusVersion: NEXUS_VERSION,
-                        protocol: NEXUS_PROTOCOL,
-                        nexusUrl: NEXUS_URL,
-                        groupId: pom.groupId,
-                        version: pom.version,
-                        repository: NEXUS_REPOSITORY,
-                        credentialsId: NEXUS_CREDENTIAL_ID,
-                        artifacts: [
-                            [artifactId: pom.artifactId,
-                             classifier: '',
-                             file: artifactPath,
-                             type: pom.packaging],
-                            [artifactId: pom.artifactId,
-                             classifier: '',
-                             file: "pom.xml",
-                             type: "pom"]
-                        ]
-                    )
+                withSonarQubeEnv('SonarQube') {
+                    sh 'mvn sonar:sonar'
                 }
             }
         }
-
-        stage("Deploy to Tomcat") {
+        stage('Deploy to Nexus') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'tomcat_credentials',
-                                                 usernameVariable: 'TOMCAT_USER',
-                                                 passwordVariable: 'TOMCAT_PASS')]) {
-                    sh """
-                        curl -u $TOMCAT_USER:$TOMCAT_PASS \
-                        -T target/hiring-0.1.war \
-                        http://52.87.164.57:8080/manager/text/deploy?path=/hiring&update=true
-                    """
+                withCredentials([usernamePassword(credentialsId: "${NEXUS_CRED}", usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
+                    sh '''
+                    mvn deploy -DskipTests \
+                        -Dnexus.username=$NEXUS_USER \
+                        -Dnexus.password=$NEXUS_PASS \
+                        --settings /var/lib/jenkins/.m2/settings.xml
+                    '''
                 }
+            }
+        }
+        stage('Deploy to Tomcat') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: "${TOMCAT_CRED}", usernameVariable: 'TOMCAT_USER', passwordVariable: 'TOMCAT_PASS')]) {
+                    sh '''
+                    WAR_FILE=$(ls target/*.war | head -n 1)
+                    curl -u $TOMCAT_USER:$TOMCAT_PASS \
+                         -T $WAR_FILE \
+                         http://52.87.164.57:8080/manager/text/deploy?path=/hiring&update=true
+                    '''
+                }
+            }
+        }
+        stage('Slack Notification') {
+            steps {
+                slackSend(
+                    channel: '#jenkins-integration',
+                    color: 'good',
+                    message: "Hi Team, Jenkins pipeline for jenkins-04 task 2 *SIMPLE CUSTOMER APP* has finished successfully! :white_check_mark:\nDeployed by: Imran Khan"
+                )
             }
         }
     }
-
     post {
-        success {
-            echo "✅ Pipeline finished successfully!"
-            withCredentials([string(credentialsId: 'slack_integrations', variable: 'SLACK_TOKEN')]) {
-                slackSend(channel: '#build-notifications',
-                          color: 'good',
-                          token: SLACK_TOKEN,
-                          message: "✅ Build & Deploy Succeeded: ${env.JOB_NAME} #${env.BUILD_NUMBER}")
-            }
+        always {
+            echo 'Pipeline finished'
         }
         failure {
-            echo "❌ Pipeline failed!"
-            withCredentials([string(credentialsId: 'slack_integrations', variable: 'SLACK_TOKEN')]) {
-                slackSend(channel: '#build-notifications',
-                          color: 'danger',
-                          token: SLACK_TOKEN,
-                          message: "❌ Build/Deploy Failed: ${env.JOB_NAME} #${env.BUILD_NUMBER}")
-            }
+            slackSend(
+                channel: '#jenkins-integration',
+                color: 'danger',
+                message: ":warning: Jenkins pipeline for *hiring-app* failed! Please check."
+            )
         }
     }
 }
