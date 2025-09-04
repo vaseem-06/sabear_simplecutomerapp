@@ -12,7 +12,7 @@ pipeline {
         }
         stage('Build') {
             steps {
-                tool name: 'Maven-3.9.11', type: 'maven'
+                tool name: 'MVN_HOME', type: 'maven'
                 sh 'mvn clean package -DskipTests'
             }
         }
